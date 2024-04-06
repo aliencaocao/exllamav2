@@ -75,7 +75,7 @@ class ExLlamaV2Embedding(ExLlamaV2Module):
                 past_len = None,
                 intermediates: bool = False,
                 loras = None) -> torch.Tensor | dict[str: torch.Tensor]:
-
+        hidden_states = hidden_states.to(self.embedding.weight.device)
         hidden_states = self.embedding.forward(hidden_states)
 
         # Normalize the input embeddings for Gemma

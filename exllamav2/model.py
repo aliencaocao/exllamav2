@@ -570,6 +570,7 @@ class ExLlamaV2:
     @torch.inference_mode()
     def forward(self,
                 input_ids: torch.Tensor,
+                input_embeddings: torch.Tensor | None = None,
                 cache: ExLlamaV2CacheBase | list[ExLlamaV2CacheBase] | None = None,
                 input_mask: torch.Tensor | None = None,
                 preprocess_only: bool = False,
@@ -617,8 +618,7 @@ class ExLlamaV2:
             FP16 logits tensor, shape (batch_size, q_len, vocab_size)
             (optional) state tensor, shape (batch_size, q_len, hidden_size)
         """
-
-        bsz, q_len = input_ids.shape
+        bsz, q_len = input_ids.shape if input_ids is not None else input_embeddings.shape[:2]
         remaining_q_len = q_len
 
         # Attn and MLP layers have preallocated buffers for temp states, sized by the model config. Effective max input
@@ -634,6 +634,7 @@ class ExLlamaV2:
             assert q_len <= effective_max_input_len, "Maximum input length exceeded in model.forward"
 
             result, last_state = self._forward(input_ids = input_ids,
+                                               input_embeddings = input_embeddings,
                                                cache = cache,
                                                input_mask = input_mask,
                                                preprocess_only = preprocess_only,
@@ -685,7 +686,8 @@ class ExLlamaV2:
             _last_id_only = last_id_only
             _preprocess_only = preprocess_only or (chunk_end < q_len and last_id_only)
 
-            r, ls = self._forward(input_ids = input_ids[:, chunk_begin : chunk_end],
+            r, ls = self._forward(input_ids = input_ids[:, chunk_begin : chunk_end] if input_ids is not None else None,
+                                  input_embeddings = input_embeddings[:, chunk_begin : chunk_end] if input_embeddings is not None else None,
                                   cache = cache,
                                   input_mask = input_mask,
                                   preprocess_only = _preprocess_only,
@@ -713,7 +715,8 @@ class ExLlamaV2:
 
     @torch.inference_mode()
     def _forward(self,
-                 input_ids: torch.Tensor,
+                 input_ids: torch.Tensor = None,
+                 input_embeddings: torch.Tensor | None = None,
                  cache: ExLlamaV2CacheBase | list[ExLlamaV2CacheBase] | None = None,
                  input_mask: torch.Tensor | None = None,
                  preprocess_only: bool = False,
@@ -724,7 +727,7 @@ class ExLlamaV2:
                  abort_event: threading.Event | None = None) \
         -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
 
-        batch_size, seq_len = input_ids.shape
+        batch_size, seq_len = input_ids.shape if input_ids is not None else input_embeddings.shape[:2]
         past_len = 0
         if cache is not None:
             if isinstance(cache, ExLlamaV2CacheBase):
@@ -740,7 +743,7 @@ class ExLlamaV2:
 
         # assert cache is None or isinstance(cache, list) or batch_size <= cache.batch_size
 
-        x = input_ids
+        x = input_ids if input_ids is not None else input_embeddings
         attn_params = ExLlamaV2Attention.Params(batch_size, seq_len, past_len, input_mask, position_offsets)
         last_state = None
 
@@ -751,6 +754,8 @@ class ExLlamaV2:
             if abort_event and abort_event.is_set(): return None, None
 
             # Onward
+            if input_embeddings is not None and isinstance(module, ExLlamaV2Embedding):
+                continue
 
             device = _torch_device(module.device_idx)
 
