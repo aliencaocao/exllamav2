@@ -107,7 +107,6 @@ setup(
         "pandas",
         "ninja",
         "fastparquet",
-        "torch",
         "safetensors",
         "sentencepiece",
         "pygments",
