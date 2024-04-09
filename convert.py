@@ -22,6 +22,7 @@ parser.add_argument("-ra", "--rope_alpha", type = float, help = "RoPE alpha valu
 parser.add_argument("-hb", "--head_bits", type = int, default = 6, help = "Target bits per weight (head layer)")
 parser.add_argument("-om", "--output_measurement", type = str, help = "Only perform measurement pass, then save measurement to the specified file")
 parser.add_argument("-m", "--measurement", type = str, help = "Reuse previous measurement")
+parser.add_argument("-e", "--embeddings", type = str, help = "Reuse previous embeddings")
 parser.add_argument("-r", "--dataset_rows", type = int, default = 100, help = "Number of rows to apply from dataset")
 parser.add_argument("-mr", "--measurement_rows", type = int, default = 16, help = "Number of rows to apply from dataset when measuring")
 parser.add_argument("-l", "--length", type = int, default = 2048, help = "Max no. tokens per sample")
@@ -113,6 +114,11 @@ job = {"in_dir": args.in_dir,
        "output_measurement": output_measurement,
        "progress": "begin"}
 
+if args.embeddings is not None:
+    job["reuse_embeddings"] = args.embeddings
+    abspath = os.path.abspath(args.embeddings)
+    assert abspath == os.path.abspath(os.path.join(job["out_dir"], "hidden_states.safetensors")) and os.path.exists(abspath)
+
 if args.measurement is not None:
     with open(args.measurement, "r", encoding = "utf8") as f:
         imp_measurement = json.load(f)
@@ -200,6 +206,12 @@ while True:
             job["progress"] = "optimize"
             save_job()
 
+        elif "reuse_embeddings" in job:
+
+            print(f" -- Reusing embeddings: {job['reuse_embeddings']}")
+            job["progress"] = "measure_quant"
+            save_job()
+
         else:
 
             print(f" -- Tokenizing samples (measurement)...")
@@ -216,28 +228,16 @@ while True:
 
     if progress == "measure_quant":
         print(f" -- Measuring quantization impact...")
-
-        model.unload()
-        config.max_output_len = 16
-        model = ExLlamaV2(config)
-        model.load(lazy = True)
-
         status = measure_quant(job, save_job, model)  # capturing the graceful exits
         if status == "interrupted":
             print("Process interrupted. Exiting gracefully.")
             save_job()
-            sys.exit(1)  
+            sys.exit(1)
         if job["output_measurement"] is None:
             job["progress"] = "optimize"
         else:
             job["progress"] = "finished"
         save_job()
-
-        model.unload()
-        config.max_output_len = None
-        model = ExLlamaV2(config)
-        model.load(lazy = True)
-
 
     if progress == "optimize":
 
@@ -276,8 +276,3 @@ while True:
     if progress == "finished": break
 
 print(f" -- Finished")
-
-
-
-
-
