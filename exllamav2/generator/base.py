@@ -66,6 +66,7 @@ class ExLlamaV2BaseGenerator:
                         add_bos: bool = False,
                         abort_event: threading.Event | None = None,
                         input_embeddings: torch.Tensor | None = None,
+                        attention_mask: torch.Tensor | None = None,
                         return_logits: bool = False,
                         return_ids: bool = False,
                         return_prompt: bool = True):
@@ -116,6 +117,11 @@ class ExLlamaV2BaseGenerator:
             Tensor of shape (batch_size, n, hidden_size) added to the beginning of the prompt. Batching
             is not supported when passing input embeddings unless all prompts are the same. Prompt must
             contain the string `{{EMBED_HERE}}` to indicate where embeddings are to be inserted.
+
+        :param attention_mask:
+            Tensor of shape (batch_size, n) that applies attention masks to input embeddings.
+            If no input embedding is provided, this argument is ignored. If not batching, this argument is also ignored as there will be no padding required.
+            If not provided when input embedding is provided, it is assumed that all tokens in input embedding are not padding tokens. This can lead to unexpected results if padding has been done on them.
 
         :param return_logits:
             Return the logits for each NEW token generated in a list of Tensors of shape (BATCHSIZE, NEW_TOKEN_NUM, VOCAB_SIZE). If batchsize is 1, then it will be a 2D tensor of shape (NEW_TOKEN_NUM, VOCAB_SIZE).
@@ -201,6 +207,10 @@ class ExLlamaV2BaseGenerator:
                     image_ids = torch.arange(EMBEDDING_INDEX, EMBEDDING_INDEX + num_emb_tokens, dtype = torch.long).unsqueeze(0)
                     image_ids_list.append(image_ids)
                 image_ids = torch.cat(image_ids_list, dim = 0)
+
+            if attention_mask is not None:
+                # apply attention mask to the embeddings
+                image_ids[[attention_mask == False]] = self.tokenizer.pad_token_id
             ids = torch.cat((pre_ids, image_ids, post_ids), dim = -1)
             if isinstance(prompt, str):
                 prompt_text_ids_len = pre_ids.shape[1] + post_ids.shape[1]
