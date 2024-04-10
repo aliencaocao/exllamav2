@@ -153,14 +153,22 @@ class ExLlamaV2BaseGenerator:
         # Tokenize input and produce padding mask if needed, inserting embeddings if provided
 
         batch_size = 1 if isinstance(prompt, str) else len(prompt)
-        prompts_identical = batch_size == 1 or all(s == prompt[0] for s in prompt)
+        # prompts_identical = batch_size == 1 or all(s == prompt[0] for s in prompt)
+        prompts_identical = True
+        embed_marker = "{{EMBED_HERE}}"
 
         if input_embeddings is not None:
-
-            embed_marker = "{{EMBED_HERE}}"
-            prompt_split = prompt.split(embed_marker)
-            assert len(prompt_split) == 2, \
-                f"Prompt must contain one instance of {embed_marker} when embeddings are provided"
+            if isinstance(prompt, str):
+                prompt_split = prompt.split(embed_marker)
+                assert len(prompt_split) == 2, \
+                    f"Prompt must contain one instance of {embed_marker} when embeddings are provided"
+            elif isinstance(prompt, list):
+                prompt_split = [p.split(embed_marker) for p in prompt]
+                assert all(len(p) == 2 for p in prompt_split), \
+                    f"Prompt must contain one instance of {embed_marker} when embeddings are provided"
+                prompt_split = [list(x) for x in zip(*prompt_split)]  # group the front half into 1 list and back half into another
+            else:
+                raise ValueError("Prompt must be a string or a list of strings.")
 
             if batch_size > 1: assert prompts_identical, \
                 "Batched generation with input embeddings requires all prompts to be identical."
@@ -168,19 +176,36 @@ class ExLlamaV2BaseGenerator:
             assert input_embeddings.shape[0] == batch_size, \
                 "Input embeddings tensor does not match batch size of prompt."
 
-            pre_ids, _ = self.tokenizer.encode(prompt_split[0].rstrip(" \t"),
+            if isinstance(prompt, str):
+                prompt_split[0] = prompt_split[0].rstrip(" \t")
+                prompt_split[1] = prompt_split[1].lstrip(" \t")
+            else:
+                prompt_split[0] = [p.rstrip(" \t") for p in prompt_split[0]]
+                prompt_split[1] = [p.lstrip(" \t") for p in prompt_split[1]]
+
+            pre_ids, _ = self.tokenizer.encode(prompt_split[0],
                                                encode_special_tokens = encode_special_tokens,
                                                return_offsets = True,
                                                add_bos = add_bos)
-            post_ids, _ = self.tokenizer.encode(prompt_split[1].lstrip(" \t"),
+            post_ids, _ = self.tokenizer.encode(prompt_split[1],
                                                encode_special_tokens = encode_special_tokens,
                                                return_offsets = True,
                                                add_bos = False)
-
+            batch_size = input_embeddings.shape[0]
             num_emb_tokens = input_embeddings.shape[1]
-            image_ids = torch.arange(EMBEDDING_INDEX, EMBEDDING_INDEX + num_emb_tokens, dtype = torch.long).unsqueeze(0)
+            if batch_size == 1:
+                image_ids = torch.arange(EMBEDDING_INDEX, EMBEDDING_INDEX + num_emb_tokens, dtype=torch.long).unsqueeze(0)
+            else:
+                image_ids_list = []
+                for b in range(batch_size):
+                    image_ids = torch.arange(EMBEDDING_INDEX, EMBEDDING_INDEX + num_emb_tokens, dtype = torch.long).unsqueeze(0)
+                    image_ids_list.append(image_ids)
+                image_ids = torch.cat(image_ids_list, dim = 0)
             ids = torch.cat((pre_ids, image_ids, post_ids), dim = -1)
-            prompt_text_ids_len = pre_ids.shape[1] + post_ids.shape[1]
+            if isinstance(prompt, str):
+                prompt_text_ids_len = pre_ids.shape[1] + post_ids.shape[1]
+            else:
+                prompt_text_ids_len = [pre_ids[i][pre_ids[i] != self.tokenizer.pad_token_id].shape[0] + post_ids[i][post_ids[i] != self.tokenizer.pad_token_id].shape[0] for i in range(batch_size)]
 
             position_offsets = None
 
@@ -189,7 +214,10 @@ class ExLlamaV2BaseGenerator:
                                                           encode_special_tokens = encode_special_tokens,
                                                           return_offsets = True,
                                                           add_bos = add_bos)
-            prompt_text_ids_len = ids.shape[1]
+            if isinstance(prompt, str):
+                prompt_text_ids_len = ids.shape[1]
+            else:
+                prompt_text_ids_len = [id[id != self.tokenizer.pad_token_id].shape[0] for id in ids]
             if prompts_identical:
                 position_offsets = None
 
@@ -299,16 +327,27 @@ class ExLlamaV2BaseGenerator:
 
         decode_ids = self.sequence_ids[:, first_token:]
         if input_embeddings is not None:
-            decode_ids = torch.stack([decode_ids[i][decode_ids[i] != self.tokenizer.pad_token_id] for i in range(batch_size)])
+            decode_ids = [decode_ids[i][decode_ids[i] != self.tokenizer.pad_token_id] for i in range(batch_size)]
+            if not isinstance(prompt, str):
+                # pad for stack for batch decoding
+                max_len = max(len(x) for x in decode_ids)
+                decode_ids = [torch.cat([x, torch.full((max_len - len(x),), self.tokenizer.pad_token_id, dtype = torch.long)]) for x in decode_ids]
+                decode_ids = torch.stack(decode_ids)
         text = self.tokenizer.decode(decode_ids, decode_special_tokens = decode_special_tokens)
         logits_hist = torch.cat(logits_hist, dim=1) if return_logits else None
         if not return_prompt:
             if isinstance(prompt, str):
-                _prompt = [prompt]
+                _prompt = [prompt.replace(embed_marker, '')]
             else:
-                _prompt = prompt
-            text = [t[len(p)-1:] for p, t in zip(_prompt, text)]
-            if return_ids: decode_ids = decode_ids[:, prompt_text_ids_len:]
+                _prompt = [p.replace(embed_marker, '') for p in prompt]
+            text = [t[len(p):] for p, t in zip(_prompt, text)]
+            if return_ids:
+                # unpad after decoding
+                decode_ids = [id[id != self.tokenizer.pad_token_id] for id in decode_ids]
+                if isinstance(prompt, str):
+                    decode_ids = [decode_ids[0][prompt_text_ids_len:]]
+                else:
+                    decode_ids = [id[prompt_len:] for prompt_len, id in zip(prompt_text_ids_len, decode_ids)]
 
         if not return_ids and not return_logits:
             if isinstance(prompt, str): return text[0]
